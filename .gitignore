@@ -11,3 +11,5 @@ dist/
 MANIFEST.MF
 META-INF
 *.jar
+.cabal-sandbox/
+cabal.sandbox.config

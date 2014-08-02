@@ -16,6 +16,7 @@ module JVM.Builder.Monad
    addToPool,
    i0, i1, i8,
    newMethod,
+   newField,
    setStackSize, setMaxLocals,
    withClassPath,
    getClassField, getClassMethod,
@@ -48,6 +49,7 @@ data GState = GState {
   currentMethod :: Maybe (Method Direct), -- ^ Current method
   stackSize :: Word16,                    -- ^ Maximum stack size for current method
   locals :: Word16,                       -- ^ Maximum number of local variables for current method
+  clsFields :: [Field Direct],
   classPath :: [Tree CPEntry]
   }
   deriving (Eq,Show)
@@ -62,6 +64,7 @@ emptyGState = GState {
   currentMethod = Nothing,
   stackSize = 496,
   locals = 0,
+  clsFields = [],
   classPath = []}
 
 class Monad m => GeneratorMonad m where
@@ -176,6 +179,11 @@ addSig c@(MethodSignature args ret) = do
   let bsig = encode c
   addItem (CUTF8 bsig)
 
+addFieldSig :: (Generator e g) => FieldSignature -> g e Word16
+addFieldSig c = do
+  let bsig = encode c
+  addItem (CUTF8 bsig)
+
 -- | Add a constant into pool
 addToPool :: (Generator e g) => Constant Direct -> g e Word16
 addToPool c@(CClass str) = do
@@ -279,6 +287,24 @@ newMethod flags name args ret gen = do
   endMethod
   return (NameType name sig)
 
+newField :: Generator e g
+         => [AccessFlag]
+         -> B.ByteString
+         -> FieldSignature
+         -> g e (NameType (Field Direct))
+newField flags name sig = do
+  addToPool (CString name)
+  let nt = NameType name sig :: NameType (Field Direct)
+  addNT nt
+  let field = Field {
+                fieldAccessFlags = S.fromList flags,
+                fieldName = name,
+                fieldSignature = sig,
+                fieldAttributesCount = 0,
+                fieldAttributes = AR M.empty }
+  modifyGState $ \st -> st {clsFields = field : clsFields st}
+  return nt
+
 -- | Get a class from current ClassPath
 getClass :: (Throws ENotLoaded e, Throws ENotFound e)
          => String -> GenerateIO e (Class Direct)
@@ -355,7 +381,10 @@ generateIO cp name gen = do
         thisClass = name,
         superClass = "java/lang/Object",
         classMethodsCount = fromIntegral $ length (doneMethods res),
-        classMethods = doneMethods res }
+        classMethods = doneMethods res,
+        classFieldsCount = fromIntegral $ length (clsFields res),
+        classFields = clsFields res
+        }
 
 -- | Generate a class
 generate :: [Tree CPEntry]
@@ -375,6 +404,8 @@ generate cp name gen =
         accessFlags = S.fromList [ACC_PUBLIC, ACC_STATIC],
         thisClass = name,
         superClass = "java/lang/Object",
+        classFieldsCount = fromIntegral $ length (clsFields res),
+        classFields = clsFields res,
         classMethodsCount = fromIntegral $ length (doneMethods res),
         classMethods = doneMethods res }
 

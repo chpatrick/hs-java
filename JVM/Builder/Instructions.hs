@@ -295,6 +295,14 @@ getStaticField :: Generator e g => B.ByteString -> NameType (Field Direct) -> g 
 getStaticField cls sig =
   i1 GETSTATIC (CField cls sig)
 
+getField :: Generator e g => B.ByteString -> NameType (Field Direct) -> g e ()
+getField cls sig =
+  i1 GETFIELD (CField cls sig)
+
+putField :: Generator e g => B.ByteString -> NameType (Field Direct) -> g e ()
+putField cls sig =
+  i1 PUTFIELD (CField cls sig)
+
 loadString :: Generator e g => String -> g e ()
 loadString str =
   i8 LDC1 (CString $ fromString $ encodeString $ str)
