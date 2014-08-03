@@ -59,6 +59,12 @@ test = do
       iconst_5
       -- Call previously declared method
       invokeStatic "Test" hello
+      
+      iconst_0
+      (IF C_NE) `useLabel` "label1"
+      invokeStatic "Hello" helloJava
+      setLabel "label1"
+
       i0 RETURN
 
   return ()

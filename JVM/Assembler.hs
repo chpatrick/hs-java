@@ -21,12 +21,14 @@ import Control.Monad
 import Control.Applicative
 import Data.Ix (inRange)
 import Data.Word
+import Data.Int
 import qualified Data.Binary as Binary
 import qualified Data.ByteString.Lazy as B
 
 import Data.BinaryState
 import JVM.ClassFile
 
+-- import Debug.Trace
 
 -- | Immediate constant. Corresponding value will be added to base opcode.
 data IMM =
@@ -240,11 +242,11 @@ data Instruction =
   | LCMP                   -- ^ 148
   | FCMP CMP               -- ^ 149, 150
   | DCMP CMP               -- ^ 151, 152
-  | IF CMP Word16          -- ^ 153, 154, 155, 156, 157, 158
-  | IF_ICMP CMP Word16     -- ^ 159, 160, 161, 162, 163, 164
-  | IF_ACMP CMP Word16     -- ^ 165, 166
-  | GOTO Word16            -- ^ 167
-  | JSR Word16             -- ^ 168
+  | IF CMP Int16           -- ^ 153, 154, 155, 156, 157, 158
+  | IF_ICMP CMP Int16      -- ^ 159, 160, 161, 162, 163, 164
+  | IF_ACMP CMP Int16      -- ^ 165, 166
+  | GOTO Int16             -- ^ 167
+  | JSR Int16              -- ^ 168
   | RET                    -- ^ 169
   | TABLESWITCH Word8 Word32 Word32 Word32 [Word32]     -- ^ 170
   | LOOKUPSWITCH Word8 Word32 Word32 [(Word32, Word32)] -- ^ 171
@@ -477,7 +479,9 @@ instance BinaryState Integer Instruction where
   put (DCMP C_LT)     = putByte 151
   put (DCMP C_GT)     = putByte 152
   put (DCMP c)        = fail $ "No such instruction: DCMP " ++ show c
-  put (IF c x)        = putByte (fromIntegral $ 153 + fromEnum c) >> put x
+  put (IF c x)        = do
+                        putByte (fromIntegral $ 153 + fromEnum c)
+                        put x
   put (IF_ACMP C_EQ x) = put1 165 x
   put (IF_ACMP C_NE x) = put1 166 x
   put (IF_ACMP c _)   = fail $ "No such instruction: IF_ACMP " ++ show c

@@ -16,6 +16,7 @@ module JVM.Builder.Monad
    Generate (..), GenerateIO (..),
    addToPool,
    i0, i1, i8,
+   setLabel, useLabel,
    newMethod,
    newField,
    setStackSize, setMaxLocals,
@@ -31,6 +32,7 @@ import Control.Monad.Exception
 import Control.Monad.Exception.Base
 import Data.Maybe
 import Data.Word
+import Data.Int
 import Data.Binary
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -42,11 +44,13 @@ import JVM.Assembler
 import JVM.Exceptions
 import Java.ClassPath
 
+-- import Debug.Trace
+
 type Label = String
 
 data UInstruction =
     Resolved Instruction
-  | Unresolved (Word16 -> Instruction) Label
+  | Unresolved (Int16 -> Instruction) Label
   | SetLabel Label
 
 instance Show UInstruction where
@@ -139,24 +143,29 @@ instance (MonadState GState (EMT e (State GState))) => Generator e Generate wher
 
 resolveLabels :: forall e g. (Generator e g, Throws UnresolvedLabel e) => [UInstruction] -> g e [Instruction]
 resolveLabels uinstrs = do
-    let labels = M.fromList $ catMaybes $ evalState (mapM getLabels uinstrs) 0
-    catMaybes `liftM` mapM (resolve labels) uinstrs
+    let lens = map instrLen uinstrs
+        offsets = scanl (+) 0 lens
+        labels = M.fromList $ catMaybes $ zipWith getLabels offsets uinstrs
+    catMaybes `liftM` zipWithM (resolve labels) offsets uinstrs
   where
-    getLabels :: UInstruction -> State Word16 (Maybe (Label, Word16))
-    getLabels (SetLabel label) = do
-      offset <- St.get
-      return $ Just (label, offset)
-    getLabels _ = do
-      modify (1 +)
-      return Nothing
+    
+    instrLen :: UInstruction -> Int16
+    instrLen (SetLabel _) = 0
+    instrLen (Resolved instr) = fromIntegral $ B.length $ encodeInstructions [instr]
+    instrLen (Unresolved fn _) = fromIntegral $ B.length $ encodeInstructions [fn 0]
+    
+    getLabels :: Int16 -> UInstruction -> Maybe (Label, Int16)
+    getLabels offset (SetLabel label) = Just (label, offset)
+    getLabels _ _ = Nothing
 
-    resolve :: M.Map Label Word16 -> UInstruction -> g e (Maybe Instruction) 
-    resolve _ (Resolved instr) = return (Just instr)
-    resolve m (Unresolved fn label) =
+    resolve :: M.Map Label Int16 -> Int16 -> UInstruction -> g e (Maybe Instruction) 
+    resolve _ _ (Resolved instr) = return (Just instr)
+    resolve m offset (Unresolved fn label) =
       case M.lookup label m of
         Nothing -> throwG (UnresolvedLabel label)
-        Just offset -> return $ Just $ fn offset
-    resolve _ (SetLabel _) = return Nothing
+        Just target -> do
+          return $ Just $ fn (target - offset)
+    resolve _ _ (SetLabel _) = return Nothing
 
 
 execGenerateIO :: [Tree CPEntry]
@@ -284,7 +293,7 @@ setLabel :: Generator e g => Label -> g e ()
 setLabel label = 
   modifyGState $ \st -> st {generated = generated st ++ [SetLabel label]}
 
-useLabel :: Generator e g => (Word16 -> Instruction) -> Label -> g e ()
+useLabel :: Generator e g => (Int16 -> Instruction) -> Label -> g e ()
 useLabel fn label =
   modifyGState $ \st -> st {generated = generated st ++ [Unresolved fn label]}
 
