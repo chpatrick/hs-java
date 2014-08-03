@@ -23,6 +23,14 @@ instance Show UnexpectedEndMethod where
 
 instance Exception UnexpectedEndMethod
 
+data UnresolvedLabel = UnresolvedLabel String
+  deriving (Typeable)
+
+instance Show UnresolvedLabel where
+  show (UnresolvedLabel label) = "Unresolved label: " ++ label
+
+instance Exception UnresolvedLabel
+
 data ENotLoaded = ClassFileNotLoaded FilePath
                 | JARNotLoaded FilePath String
   deriving (Typeable)
@@ -50,3 +58,4 @@ force s x =
   case tryEM x of
     Right result -> result
     Left  exc    -> error $ "Exception at " ++ s ++ ": " ++ show exc
+

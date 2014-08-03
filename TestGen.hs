@@ -13,7 +13,7 @@ import Java.ClassPath
 import qualified Java.Lang
 import qualified Java.IO
 
-test :: (Throws ENotFound e, Throws ENotLoaded e, Throws UnexpectedEndMethod e) => GenerateIO e ()
+test :: (Throws ENotFound e, Throws ENotLoaded e, Throws UnresolvedLabel e) => GenerateIO e ()
 test = do
   withClassPath $ do
       -- Add current directory (with Hello.class) to ClassPath

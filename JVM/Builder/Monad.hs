@@ -9,6 +9,7 @@
 --
 module JVM.Builder.Monad
   (GState (..),
+   UInstruction (..),
    emptyGState,
    GeneratorMonad (..),
    Generator (..),
@@ -28,6 +29,7 @@ import Prelude hiding (catch)
 import Control.Monad.State as St
 import Control.Monad.Exception
 import Control.Monad.Exception.Base
+import Data.Maybe
 import Data.Word
 import Data.Binary
 import qualified Data.Map as M
@@ -40,9 +42,21 @@ import JVM.Assembler
 import JVM.Exceptions
 import Java.ClassPath
 
+type Label = String
+
+data UInstruction =
+    Resolved Instruction
+  | Unresolved (Word16 -> Instruction) Label
+  | SetLabel Label
+
+instance Show UInstruction where
+  show (Resolved instr) = show instr
+  show (Unresolved fn label) = show (fn 0) ++ " - label " ++ label
+  show (SetLabel label) = label ++ ":"
+
 -- | Generator state
 data GState = GState {
-  generated :: [Instruction],             -- ^ Already generated code (in current method)
+  generated :: [UInstruction],            -- ^ Already generated code (in current method)
   currentPool :: Pool Direct,             -- ^ Already generated constants pool
   nextPoolIndex :: Word16,                -- ^ Next index to be used in constants pool
   doneMethods :: [Method Direct],         -- ^ Already generated class methods
@@ -52,7 +66,7 @@ data GState = GState {
   clsFields :: [Field Direct],
   classPath :: [Tree CPEntry]
   }
-  deriving (Eq,Show)
+  deriving (Show)
 
 -- | Empty generator state
 emptyGState ::  GState
@@ -123,6 +137,28 @@ instance Generator e GenerateIO where
 instance (MonadState GState (EMT e (State GState))) => Generator e Generate where
   throwG e = Generate (throw e)
 
+resolveLabels :: forall e g. (Generator e g, Throws UnresolvedLabel e) => [UInstruction] -> g e [Instruction]
+resolveLabels uinstrs = do
+    let labels = M.fromList $ catMaybes $ evalState (mapM getLabels uinstrs) 0
+    catMaybes `liftM` mapM (resolve labels) uinstrs
+  where
+    getLabels :: UInstruction -> State Word16 (Maybe (Label, Word16))
+    getLabels (SetLabel label) = do
+      offset <- St.get
+      return $ Just (label, offset)
+    getLabels _ = do
+      modify (1 +)
+      return Nothing
+
+    resolve :: M.Map Label Word16 -> UInstruction -> g e (Maybe Instruction) 
+    resolve _ (Resolved instr) = return (Just instr)
+    resolve m (Unresolved fn label) =
+      case M.lookup label m of
+        Nothing -> throwG (UnresolvedLabel label)
+        Just offset -> return $ Just $ fn offset
+    resolve _ (SetLabel _) = return Nothing
+
+
 execGenerateIO :: [Tree CPEntry]
                -> GenerateIO (Caught SomeException NoExceptions) a
                -> IO GState
@@ -130,12 +166,26 @@ execGenerateIO cp (GenerateIO emt) = do
     let caught = emt `catch` (\(e :: SomeException) -> fail $ show e)
     execStateT (runEMT caught) (emptyGState {classPath = cp})
 
+evalGenerateIO :: [Tree CPEntry]
+               -> GenerateIO (Caught SomeException NoExceptions) a
+               -> IO (a, GState)
+evalGenerateIO cp (GenerateIO emt) = do
+    let caught = emt `catch` (\(e :: SomeException) -> fail $ show e)
+    runStateT (runEMT caught) (emptyGState {classPath = cp})
+
 execGenerate :: [Tree CPEntry]
              -> Generate (Caught SomeException NoExceptions) a
              -> GState
 execGenerate cp (Generate emt) = do
     let caught = emt `catch` (\(e :: SomeException) -> fail $ show e)
     execState (runEMT caught) (emptyGState {classPath = cp})
+
+evalGenerate :: [Tree CPEntry]
+             -> Generate (Caught SomeException NoExceptions) a
+             -> (a, GState)
+evalGenerate cp (Generate emt) = do
+    let caught = emt `catch` (\(e :: SomeException) -> fail $ show e)
+    runState (runEMT caught) (emptyGState {classPath = cp})
 
 -- | Update ClassPath
 withClassPath :: ClassPath () -> GenerateIO e ()
@@ -212,7 +262,7 @@ addToPool c = addItem c
 
 putInstruction :: (Generator e g) => Instruction -> g e ()
 putInstruction instr = do
-  modifyGState $ \st -> st {generated = generated st ++ [instr]}
+  modifyGState $ \st -> st {generated = generated st ++ [Resolved instr]}
 
 -- | Generate one (zero-arguments) instruction
 i0 :: (Generator e g) => Instruction -> g e ()
@@ -229,6 +279,14 @@ i8 :: (Generator e g) => (Word8 -> Instruction) -> Constant Direct -> g e ()
 i8 fn c = do
   ix <- addToPool c
   i0 (fn $ fromIntegral ix)
+
+setLabel :: Generator e g => Label -> g e ()
+setLabel label = 
+  modifyGState $ \st -> st {generated = generated st ++ [SetLabel label]}
+
+useLabel :: Generator e g => (Word16 -> Instruction) -> Label -> g e ()
+useLabel fn label =
+  modifyGState $ \st -> st {generated = generated st ++ [Unresolved fn label]}
 
 -- | Set maximum stack size for current method
 setStackSize :: (Generator e g) => Word16 -> g e ()
@@ -258,12 +316,12 @@ startMethod flags name sig = do
                currentMethod = Just method }
 
 -- | End of method generation
-endMethod :: (Generator e g, Throws UnexpectedEndMethod e) => g e ()
+endMethod :: (Generator e g, Throws UnresolvedLabel e) => g e ()
 endMethod = do
   m <- getsGState currentMethod
-  code <- getsGState genCode
+  code <- genCode =<< getGState
   case m of
-    Nothing -> throwG UnexpectedEndMethod
+    Nothing -> fail $ "Impossible: unexpected endMethod"
     Just method -> do
       let method' = method {methodAttributes = AR $ M.fromList [("Code", encodeMethod code)],
                             methodAttributesCount = 1}
@@ -273,7 +331,7 @@ endMethod = do
                    doneMethods = doneMethods st ++ [method']}
 
 -- | Generate new method
-newMethod :: (Generator e g, Throws UnexpectedEndMethod e)
+newMethod :: (Generator e g, Throws UnresolvedLabel e)
           => [AccessFlag]        -- ^ Access flags for method (public, static etc)
           -> B.ByteString        -- ^ Method name
           -> [ArgumentSignature] -- ^ Signatures of method arguments
@@ -337,19 +395,23 @@ getClassMethod clsName mName = do
     Nothing  -> throwG (MethodNotFound clsName mName)
 
 -- | Access the generated bytecode length
-encodedCodeLength :: GState -> Word32
-encodedCodeLength st = fromIntegral . B.length . encodeInstructions $ generated st
+encodedCodeLength :: (Generator e g, Throws UnresolvedLabel e) => GState -> g e Word32
+encodedCodeLength st = do
+  code <- resolveLabels $ generated st
+  return $ fromIntegral $ B.length $ encodeInstructions code
 
-generateCodeLength :: Generate (Caught SomeException NoExceptions) a -> Word32
+generateCodeLength ::(Throws UnresolvedLabel e) => Generate (Caught SomeException NoExceptions) a -> Generate e Word32
 generateCodeLength = encodedCodeLength . execGenerate []
 
 -- | Convert Generator state to method Code.
-genCode :: GState -> Code
-genCode st = Code {
+genCode :: (Generator e g, Throws UnresolvedLabel e) => GState -> g e Code
+genCode st = do
+  code <- resolveLabels $ generated st
+  return $ Code {
     codeStackSize = stackSize st,
     codeMaxLocals = locals st,
-    codeLength = encodedCodeLength st,
-    codeInstructions = generated st,
+    codeLength = fromIntegral $ B.length $ encodeInstructions code,
+    codeInstructions = code,
     codeExceptionsN = 0,
     codeExceptions = [],
     codeAttrsN = 0,
@@ -372,8 +434,7 @@ generateIO cp name gen = do
         initClass name
         gen
   res <- execGenerateIO cp generator
-  let code = genCode res
-      d = defaultClass :: Class Direct
+  let d = defaultClass :: Class Direct
   return $ d {
         constsPoolSize = fromIntegral $ M.size (currentPool res),
         constsPool = currentPool res,
@@ -396,7 +457,6 @@ generate cp name gen =
         initClass name
         gen
       res = execGenerate cp generator
-      code = genCode res
       d = defaultClass :: Class Direct
   in  d {
         constsPoolSize = fromIntegral $ M.size (currentPool res),
