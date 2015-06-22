@@ -109,7 +109,7 @@ class (Monad (g e), GeneratorMonad (g e)) => Generator e g where
 -- | Generate monad
 newtype Generate e a = Generate {
   runGenerate :: EMT e (State GState) a }
-  deriving (Monad, MonadState GState)
+  deriving (Functor, Applicative, Monad, MonadState GState)
 
 -- instance GeneratorMonad (Generate e) where
 --   getGState = Generate $ St.get
@@ -126,7 +126,7 @@ instance MonadState st (EMT e (State st)) where
 -- | IO version of Generate monad
 newtype GenerateIO e a = GenerateIO {
   runGenerateIO :: EMT e (StateT GState IO) a }
-  deriving (Monad, MonadIO, MonadState GState)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadState GState)
 
 -- instance GeneratorMonad (GenerateIO e) where
 --   getGState = GenerateIO $ St.get
